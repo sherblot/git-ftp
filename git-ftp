@@ -60,6 +60,7 @@ CURL_PROTOCOL=""
 CURL_PUBLIC_KEY=""
 CURL_PRIVATE_KEY=""
 CURL_PROXY=""
+CURL_PATH=""
 LFTP_PROTOCOL=""
 LFTP_COMMAND_SETTINGS=""
 TMP_DIR=""
@@ -201,7 +202,7 @@ OPTIONS
 	--auto-init		Automatically run init action when running push action
 	--version		Prints version.
 	-x, --proxy		Use the specified proxy.
-
+	--curl-path		Set curl path.
 
 EXAMPLES
 	. git-ftp push -u john ftp://ftp.example.com:4445/public_ftp -p -v
@@ -472,7 +473,7 @@ upload_file() {
 	CURL_ARGS+=(-T "$SRC_FILE")
 	CURL_ARGS+=(--ftp-create-dirs)
 	CURL_ARGS+=("$REMOTE_BASE_URL/${REMOTE_PATH}${DEST_FILE}")
-	curl "${CURL_ARGS[@]}"
+	"${CURL_PATH}" "${CURL_ARGS[@]}"
 }
 
 upload_file_buffered() {
@@ -491,7 +492,7 @@ fire_upload_buffer() {
 	set_default_curl_options
 	CURL_ARGS+=(--ftp-create-dirs)
 	CURL_ARGS+=(-K "$TMP_CURL_UPLOAD_FILE")
-	curl "${CURL_ARGS[@]}"
+	"${CURL_PATH}" "${CURL_ARGS[@]}"
 	check_exit_status "Could not upload files." "$ERROR_UPLOAD"
 }
 
@@ -501,9 +502,9 @@ delete_file() {
 	CURL_ARGS+=(-Q "${REMOTE_DELETE_CMD}${REMOTE_PATH}${FILENAME}")
 	CURL_ARGS+=("$REMOTE_BASE_URL")
 	if [ "${REMOTE_CMD_OPTIONS[0]}" = "-v" ]; then
-		curl "${CURL_ARGS[@]}"
+		"${CURL_PATH}" "${CURL_ARGS[@]}"
 	else
-		curl "${CURL_ARGS[@]}" > /dev/null 2>&1
+		"${CURL_PATH}" "${CURL_ARGS[@]}" > /dev/null 2>&1
 	fi
 	if [ $? -ne 0 ]; then
 		write_log "WARNING: Could not delete ${REMOTE_PATH}${FILENAME}, continuing..."
@@ -523,9 +524,9 @@ fire_delete_buffer() {
 	set_default_curl_options
 	CURL_ARGS+=(-K "$TMP_CURL_DELETE_FILE")
 	if [ "${REMOTE_CMD_OPTIONS[0]}" = "-v" ]; then
-		curl "${CURL_ARGS[@]}"
+		"${CURL_PATH}" "${CURL_ARGS[@]}"
 	else
-		curl "${CURL_ARGS[@]}" > /dev/null 2>&1
+		"${CURL_PATH}" "${CURL_ARGS[@]}" > /dev/null 2>&1
 	fi
 	if [ $? -ne 0 ]; then
 		write_log "WARNING: Some files and/or directories could not be deleted."
@@ -536,7 +537,7 @@ get_file_content() {
 	local SRC_FILE="$1"
 	set_default_curl_options
 	CURL_ARGS+=("$REMOTE_BASE_URL/${REMOTE_PATH}${SRC_FILE}")
-	curl "${CURL_ARGS[@]}"
+	"${CURL_PATH}" "${CURL_ARGS[@]}"
 }
 
 set_local_sha1() {
@@ -992,6 +993,7 @@ commit_snapshot() {
 }
 
 handle_action() {
+	set_curl_path	
 	case "$ACTION" in
 		init)
 			action_init
@@ -1166,6 +1168,11 @@ set_curl_disable_epsv() {
 set_curl_proxy() {
 	[ -z "$CURL_PROXY" ] && CURL_PROXY="$(get_config proxy)"
 	[ -z "$CURL_PROXY" ] && CURL_PROXY="$(git config --get http.proxy)"
+}
+
+set_curl_path() {
+	[ -z $CURL_PATH ] && CURL_PATH="$(get_config curl-path)"
+	[ -z $CURL_PATH ] && CURL_PATH="curl"
 }
 
 set_merge_args() {
@@ -1425,17 +1432,17 @@ action_remove_scope() {
 # ------------------------------------------------------------
 check_curl_access() {
 	write_log "Check if curl is functional."
-	command -v curl >/dev/null 2>&1
+	command -v "${CURL_PATH}">/dev/null 2>&1
 	check_exit_status "curl is not available" "$ERROR_DOWNLOAD"
 
 	local curl_protocol="$REMOTE_PROTOCOL"
 	# The ftpes protocol is FTP + SSL
 	if [ "$curl_protocol" == "ftpes" ]; then
 		curl_protocol="ftp"
-		curl --version | grep "^Features: " | grep -qw "SSL"
+		"${CURL_PATH}" --version | grep "^Features: " | grep -qw "SSL"
 		check_exit_status "Protocol '$REMOTE_PROTOCOL' not supported by curl" "$ERROR_DOWNLOAD"
 	fi
-	curl --version | grep "^Protocols: " | grep -qw "$curl_protocol"
+	"${CURL_PATH}" --version | grep "^Protocols: " | grep -qw "$curl_protocol"
 	check_exit_status "Protocol '$REMOTE_PROTOCOL' not supported by curl" "$ERROR_DOWNLOAD"
 }
 check_remote_access() {
@@ -1443,12 +1450,12 @@ check_remote_access() {
 	set_default_curl_options
 	CURL_ARGS+=(--ftp-create-dirs)
 	CURL_ARGS+=("$REMOTE_BASE_URL/$REMOTE_PATH")
-	curl "${CURL_ARGS[@]}" > /dev/null
+	"${CURL_PATH}" "${CURL_ARGS[@]}" > /dev/null
 	
 	local EXIT_CODE=$?
 	if [ "$REMOTE_PROTOCOL" == "sftp" ] && [ $EXIT_CODE -eq 78 ]; then
 		write_log "Create $REMOTE_PATH"
-		curl "${CURL_ARGS[@]}" -Q "MKDIR $REMOTE_PATH" > /dev/null
+		"${CURL_PATH}" "${CURL_ARGS[@]}" -Q "MKDIR $REMOTE_PATH" > /dev/null
 		EXIT_CODE=$?
 	fi
 
@@ -1824,6 +1831,32 @@ do
 						shift
 					else
 						print_error_and_die "Too few arguments for option --proxy." "$ERROR_MISSING_ARGUMENTS"
+					fi
+					;;
+			esac
+			;;
+		--curl-path*)
+			case "$#,$1" in
+				*,*=*)
+					if [ ! -f "${CURL_PATH}" ]; then
+						print_error_and_die "curl not found for option --curl-path." "$ERROR_MISSING_ARGUMENTS"
+					else
+						CURL_PATH=$(expr "z$1" : 'z-[^=]*=\(.*\)')
+					fi
+					;;
+				1,*)
+					print_error_and_die "Too few arguments for option --curl-path." "$ERROR_MISSING_ARGUMENTS"
+					;;
+				*)
+					if ! echo "$2" | egrep -q '^-'; then
+						if [ ! -f "${CURL_PATH}" ]; then
+							print_error_and_die "curl not found for option --curl-path." "$ERROR_MISSING_ARGUMENTS"
+						else
+							CURL_PATH=$(expr "z$1" : 'z-[^=]*=\(.*\)')
+						fi
+						shift
+					else
+						print_error_and_die "Too few arguments for option --curl-path." "$ERROR_MISSING_ARGUMENTS"
 					fi
 					;;
 			esac
